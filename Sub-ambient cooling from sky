@@ -1,269 +1,109 @@
+import numpy as np
+import matplotlib.pyplot as plt
 
-{
- "cells": [
-  {
-   "cell_type": "markdown",
-   "id": "76cdc16c",
-   "metadata": {},
-   "source": [
-    "# Water and Energy Analysis of AI Data Center Cooling (LLM-Generated Solution)\n",
-    "\n",
-    "### Problem Summary\n",
-    "This notebook investigates the water and energy consumption to cool an AI Data Center. The mass of water at the inlet and outlet, heat generation, electricity consumption, and heat rejection are quantified to evaluate the water and energy needed for cooling.\n",
-    "\n",
-    "\n",
-    "Assumptions\n",
-    "- Data center operating at a constant power of 5000 W (all electrical exergy)\n",
-    "- Water used for single-phase cooling (liquid throughout)\n",
-    "- Coolant enters at 28°C and exits at 35°C\n",
-    "- Pressure: 1 atm\n",
-    "\n",
-    "Changes: The changes to the original solution start with the comment \"# ~~~~~~ TS changes\". "
-   ]
-  },
-  {
-   "cell_type": "code",
-   "execution_count": 20,
-   "id": "f3195bce",
-   "metadata": {},
-   "outputs": [
-    {
-     "name": "stdout",
-     "output_type": "stream",
-     "text": [
-      "Requirement already satisfied: pyCalor in /Users/schutzius/opt/anaconda3/envs/calorai_env/lib/python3.10/site-packages (1.0.21)\n",
-      "Requirement already satisfied: CoolProp in /Users/schutzius/opt/anaconda3/envs/calorai_env/lib/python3.10/site-packages (from pyCalor) (7.2.0)\n",
-      "Requirement already satisfied: igraph in /Users/schutzius/opt/anaconda3/envs/calorai_env/lib/python3.10/site-packages (from pyCalor) (0.11.9)\n",
-      "Requirement already satisfied: numpy>=1.20 in /Users/schutzius/opt/anaconda3/envs/calorai_env/lib/python3.10/site-packages (from CoolProp->pyCalor) (2.2.6)\n",
-      "Requirement already satisfied: texttable>=1.6.2 in /Users/schutzius/opt/anaconda3/envs/calorai_env/lib/python3.10/site-packages (from igraph->pyCalor) (1.7.0)\n",
-      "h2_kJperKg= 146.6756538334548 kJ/kg\n",
-      "p3_v_sat_kPa= 2.3407676975240133 kPa\n",
-      "p3_v_kPa= 1.404460618514408 kPa\n",
-      "omega_3= 0.008742692044332855\n",
-      "h3_kJperKg= 441.5991409196139 kJ/kg\n",
-      "p4_v_sat_kPa= 5.038260198190438 kPa\n",
-      "p4_v_kPa= 5.038260198190438 kPa\n",
-      "omega_4= 0.03254651522862712\n",
-      "h4_kJperKg= 515.8484009451628 kJ/kg\n",
-      "h5_kJperKg= 117.41473651376518 kJ/kg\n",
-      "mdot_2_kgPerS= 196.23233908948194 kg/s\n",
-      "(a) Mass flow rate of air into the cooling tower: 80.36 kg/s\n",
-      "(b) Mass flow rate of the makeup water: 1.91 kg/s\n",
-      "Qout_kW_estimate= 5366.094247555051 kW\n",
-      "(c) Fraction of cooling power that is done through evaporation: 75.08 %\n",
-      "\n",
-      "----- COOLING SYSTEM RESULTS -----\n",
-      "Cooling Load Required: 5750.0 kW\n",
-      "Evaporated Water:    1.913 kg/s\n",
-      "Total Water Inlet:   196.232 kg/s\n",
-      "\n",
-      "----- ENERGY CONSUMPTION -----\n",
-      "IT Load:             5000 kW\n",
-      "Auxiliary Load:      500 kW\n",
-      "Cooling Equipment:   250.0 kW\n",
-      "Total Power:         5750.0 kW\n"
-     ]
-    }
-   ],
-   "source": [
-    "import numpy as np\n",
-    "import matplotlib.pyplot as plt\n",
-    "\n",
-    "# -----------------------------\n",
-    "# 1. INPUT PARAMETERS\n",
-    "# -----------------------------\n",
-    "\n",
-    "# Data center electrical load (kW)\n",
-    "P_IT = 5000      # IT power draw (kW)\n",
-    "P_overhead = 500 # aux systems (networking, storage, UPS losses)\n",
-    "\n",
-    "# Cooling system auxiliary power (fans, pumps)\n",
-    "P_cooling_aux = 0.05 * P_IT  # 5% of IT load\n",
-    "\n",
-    "# Water properties\n",
-    "h_fg = 2257  # latent heat of vaporization of water (kJ/kg)\n",
-    "rho_water = 1000  # density kg/m^3\n",
-    "\n",
-    "# Target cooling tower approach conditions\n",
-    "T_hot_water = 35   # C\n",
-    "T_cold_water = 28  # C\n",
-    "deltaT_water = T_hot_water - T_cold_water\n",
-    "\n",
-    "# Specific heat capacity\n",
-    "cp_water = 4.186  # kJ/kg/K\n",
-    "\n",
-    "# ~~~~~~ TS changes\n",
-    "!pip install pyCalor\n",
-    "from pyCalor import thermo as th\n",
-    "\n",
-    "# we need to assume an outside air temperature. For now I will take 20 deg C.\n",
-    "Tair_C = 20\n",
-    "pAir_Pa = 101325\n",
-    "pAir_kPa = pAir_Pa/1000\n",
-    "RH3 = 60\n",
-    "RH4 = 100\n",
-    "\n",
-    "# we need to assume an exit air temperature from the cooling tower. For now I will take 33 C\n",
-    "Tair4_C = 33\n",
-    "\n",
-    "# energy transferred in is all work:\n",
-    "WdotIn_kW = P_IT+P_overhead+P_cooling_aux\n",
-    "\n",
-    "# energy is all transferred out via heat transfer to a cooling water loop\n",
-    "QdotOut_kW = WdotIn_kW\n",
-    "\n",
-    "# state 1: entering the heat exchanger in the data center\n",
-    "\n",
-    "# state 2: exiting the heat exchanger in the data center\n",
-    "st2 = th.state('water',T=(T_hot_water,'C'), x=0, name='2')\n",
-    "h2_kJperKg = st2.h; print(\"h2_kJperKg=\",h2_kJperKg,\"kJ/kg\")\n",
-    "\n",
-    "# state 3: understaturated air entering the cooling tower\n",
-    "st3_air = th.state('air',T=(Tair_C,'C'),p=(pAir_Pa,'Pa'),name='3 air')\n",
-    "st3_v = th.state('water',T=(Tair_C,'C'),x=1,name='3 vapor')\n",
-    "p3_v_sat_kPa = st3_v.p; print(\"p3_v_sat_kPa=\",p3_v_sat_kPa,\"kPa\")\n",
-    "p3_v_kPa = (RH3/100)*p3_v_sat_kPa; print(\"p3_v_kPa=\",p3_v_kPa,\"kPa\")\n",
-    "omega_3 = 0.622*p3_v_kPa/(pAir_kPa - p3_v_kPa); print(\"omega_3=\",omega_3)\n",
-    "# h = h_a + omega*h_v\n",
-    "h3_kJperKg = st3_air.h + omega_3*st3_v.h; print(\"h3_kJperKg=\",h3_kJperKg,\"kJ/kg\")\n",
-    "\n",
-    "# state 4: saturated air exiting the cooling tower\n",
-    "st4_air = th.state('air',T=(Tair4_C,'C'),p=(pAir_Pa,'Pa'),name='4 air')\n",
-    "st4_v = th.state('water',T=(Tair4_C,'C'),x=1,name='4 vapor')\n",
-    "p4_v_sat_kPa = st4_v.p; print(\"p4_v_sat_kPa=\",p4_v_sat_kPa,\"kPa\")\n",
-    "p4_v_kPa = (RH4/100)*p4_v_sat_kPa; print(\"p4_v_kPa=\",p4_v_kPa,\"kPa\")\n",
-    "omega_4 = 0.622*p4_v_kPa/(pAir_kPa - p4_v_kPa); print(\"omega_4=\",omega_4)\n",
-    "h4_kJperKg = st4_air.h + omega_4*st4_v.h; print(\"h4_kJperKg=\",h4_kJperKg,\"kJ/kg\")\n",
-    "\n",
-    "# state 5: liquid water exiting the cooling tower\n",
-    "st5 = th.state('water',T=(T_cold_water,'C'), x=0, name='5')\n",
-    "h5_kJperKg = st5.h; print(\"h5_kJperKg=\",h5_kJperKg,\"kJ/kg\")\n",
-    "\n",
-    "# water mass flow rate passing through the heat exchanger inside the data center\n",
-    "mdot_2_kgPerS = (P_IT+P_overhead+P_cooling_aux)/(cp_water*deltaT_water); print(\"mdot_2_kgPerS=\",mdot_2_kgPerS,\"kg/s\")\n",
-    "\n",
-    "# air mass flow rate passing through the cooling tower\n",
-    "mdot_air_kgPerS = (mdot_2_kgPerS*(h2_kJperKg-h5_kJperKg))/((h4_kJperKg-h3_kJperKg)-h5_kJperKg*(omega_4-omega_3))\n",
-    "print(f\"(a) Mass flow rate of air into the cooling tower: {mdot_air_kgPerS:.2f} kg/s\")\n",
-    "\n",
-    "# water makeup mass flow rate due to evaporation\n",
-    "mdot_makeup_kgPerS = mdot_air_kgPerS * (omega_4 - omega_3)\n",
-    "print(f\"(b) Mass flow rate of the makeup water: {mdot_makeup_kgPerS:.2f} kg/s\")\n",
-    "\n",
-    "# double check to see if these numbers match the acutal cooling needs:\n",
-    "cp_air_kJperKg = 1.004\n",
-    "Qout_kW_estimate = mdot_air_kgPerS*cp_air_kJperKg*(Tair4_C-Tair_C) + mdot_makeup_kgPerS*h_fg;\n",
-    "print(\"Qout_kW_estimate=\",Qout_kW_estimate,\"kW\")\n",
-    "\n",
-    "Q_evap_kW = mdot_makeup_kgPerS*h_fg\n",
-    "evap_fraction = Q_evap_kW/QdotOut_kW\n",
-    "print(f\"(c) Fraction of cooling power that is done through evaporation: {evap_fraction*100:.2f} %\")\n",
-    "\n",
-    "print(\"\\n----- COOLING SYSTEM RESULTS -----\")\n",
-    "print(f\"Cooling Load Required: {QdotOut_kW:.1f} kW\")\n",
-    "# print(f\"Sensible Water Flow: {m_dot_sensible:.3f} kg/s\") # this answer has no meaning; all of the water heating is due to sensible heating\n",
-    "print(f\"Evaporated Water:    {mdot_makeup_kgPerS:.3f} kg/s\")\n",
-    "print(f\"Total Water Inlet:   {mdot_2_kgPerS:.3f} kg/s\")\n",
-    "# print(f\"Water Outlet:        {m_dot_water_out:.3f} kg/s\") # for a steady flow heat exchanger, the mass flow rate into it is equal to the mass flow rate out\n",
-    "# print(f\"Net Water Loss (evaporation): {m_dot_evap:.3f} kg/s\") # There is no net water loss since the amount of water evaporated is equal to the mass flow rate of the makeup water\n",
-    "\n",
-    "print(\"\\n----- ENERGY CONSUMPTION -----\")\n",
-    "print(f\"IT Load:             {P_IT} kW\")\n",
-    "print(f\"Auxiliary Load:      {P_overhead} kW\")\n",
-    "print(f\"Cooling Equipment:   {P_cooling_aux:.1f} kW\")\n",
-    "print(f\"Total Power:         {WdotIn_kW:.1f} kW\")\n",
-    "\n",
-    "# ~~~~~~\n",
-    "\n"
-   ]
-  },
-  {
-   "cell_type": "code",
-   "execution_count": null,
-   "id": "bbb958a3",
-   "metadata": {},
-   "outputs": [],
-   "source": [
-    "# original solution to the problem\n",
-    "# -----------------------------\n",
-    "# 2. HEAT GENERATION & COOLING LOAD\n",
-    "# -----------------------------\n",
-    "\n",
-    "# Total heat generated by data center (all electricity becomes heat)\n",
-    "Q_total_kW = P_IT + P_overhead + P_cooling_aux\n",
-    "\n",
-    "# Cooling load required (kW)\n",
-    "Q_cooling_kW = Q_total_kW\n",
-    "\n",
-    "print(\"Total Heat Load (kW):\", Q_cooling_kW)\n",
-    "\n",
-    "# -----------------------------\n",
-    "# 3. WATER MASS FLOW REQUIREMENTS\n",
-    "# -----------------------------\n",
-    "\n",
-    "# Sensible cooling requirement (water temp change)\n",
-    "m_dot_sensible = Q_cooling_kW / (cp_water * deltaT_water)  # kg/s\n",
-    "\n",
-    "# Evaporative cooling contribution:\n",
-    "# Assume fraction of cooling done by evaporation\n",
-    "evap_fraction = 0.80\n",
-    "Q_evap_kW = evap_fraction * Q_cooling_kW\n",
-    "\n",
-    "# Mass of water evaporated (kg/s)\n",
-    "m_dot_evap = Q_evap_kW / h_fg\n",
-    "\n",
-    "# Total water in\n",
-    "m_dot_water_in = m_dot_sensible + m_dot_evap\n",
-    "\n",
-    "# For a cooling tower: outlet water flow = inlet - evaporated\n",
-    "m_dot_water_out = m_dot_sensible\n",
-    "\n",
-    "# -----------------------------\n",
-    "# 4. ENERGY CONSUMPTION SUMMARY\n",
-    "# -----------------------------\n",
-    "\n",
-    "E_total_kW = P_IT + P_overhead + P_cooling_aux\n",
-    "\n",
-    "# -----------------------------\n",
-    "# 5. OUTPUT SUMMARY\n",
-    "# -----------------------------\n",
-    "\n",
-    "print(\"\\n----- COOLING SYSTEM RESULTS -----\")\n",
-    "print(f\"Cooling Load Required: {Q_cooling_kW:.1f} kW\")\n",
-    "print(f\"Sensible Water Flow: {m_dot_sensible:.3f} kg/s\")\n",
-    "print(f\"Evaporated Water:    {m_dot_evap:.3f} kg/s\")\n",
-    "print(f\"Total Water Inlet:   {m_dot_water_in:.3f} kg/s\")\n",
-    "print(f\"Water Outlet:        {m_dot_water_out:.3f} kg/s\")\n",
-    "print(f\"Net Water Loss (evaporation): {m_dot_evap:.3f} kg/s\")\n",
-    "\n",
-    "print(\"\\n----- ENERGY CONSUMPTION -----\")\n",
-    "print(f\"IT Load:             {P_IT} kW\")\n",
-    "print(f\"Auxiliary Load:      {P_overhead} kW\")\n",
-    "print(f\"Cooling Equipment:   {P_cooling_aux:.1f} kW\")\n",
-    "print(f\"Total Power:         {E_total_kW:.1f} kW\")"
-   ]
-  }
- ],
- "metadata": {
-  "kernelspec": {
-   "display_name": "Python 3 (ipykernel)",
-   "language": "python",
-   "name": "python3"
-  },
-  "language_info": {
-   "codemirror_mode": {
-    "name": "ipython",
-    "version": 3
-   },
-   "file_extension": ".py",
-   "mimetype": "text/x-python",
-   "name": "python",
-   "nbconvert_exporter": "python",
-   "pygments_lexer": "ipython3",
-   "version": "3.10.18"
-  }
- },
- "nbformat": 4,
- "nbformat_minor": 5
-}
+# -----------------------------
+# 1. INPUT PARAMETERS
+# -----------------------------
+
+# Data center electrical load (kW)
+P_IT = 5000      # IT power draw (kW)
+P_overhead = 500 # aux systems (networking, storage, UPS losses)
+
+# Cooling system auxiliary power (fans, pumps)
+P_cooling_aux = 0.05 * P_IT  # 5% of IT load
+
+# Water properties
+h_fg = 2257  # latent heat of vaporization of water (kJ/kg)
+rho_water = 1000  # density kg/m^3
+
+# Target cooling tower approach conditions
+T_hot_water = 35   # C
+T_cold_water = 28  # C
+deltaT_water = T_hot_water - T_cold_water
+
+# Specific heat capacity
+cp_water = 4.186  # kJ/kg/K
+
+# ~~~~~~ TS changes
+!pip install pyCalor
+from pyCalor import thermo as th
+
+# we need to assume an outside air temperature. For now I will take 20 deg C.
+Tair_C = 20
+pAir_Pa = 101325
+pAir_kPa = pAir_Pa/1000
+RH3 = 60
+RH4 = 100
+
+# we need to assume an exit air temperature from the cooling tower. For now I will take 33 C
+Tair4_C = 33
+
+# energy transferred in is all work:
+WdotIn_kW = P_IT+P_overhead+P_cooling_aux
+
+# energy is all transferred out via heat transfer to a cooling water loop
+QdotOut_kW = WdotIn_kW
+
+# state 1: entering the heat exchanger in the data center
+
+# state 2: exiting the heat exchanger in the data center
+st2 = th.state('water',T=(T_hot_water,'C'), x=0, name='2')
+h2_kJperKg = st2.h; print("h2_kJperKg=",h2_kJperKg,"kJ/kg")
+
+# state 3: understaturated air entering the cooling tower
+st3_air = th.state('air',T=(Tair_C,'C'),p=(pAir_Pa,'Pa'),name='3 air')
+st3_v = th.state('water',T=(Tair_C,'C'),x=1,name='3 vapor')
+p3_v_sat_kPa = st3_v.p; print("p3_v_sat_kPa=",p3_v_sat_kPa,"kPa")
+p3_v_kPa = (RH3/100)*p3_v_sat_kPa; print("p3_v_kPa=",p3_v_kPa,"kPa")
+omega_3 = 0.622*p3_v_kPa/(pAir_kPa - p3_v_kPa); print("omega_3=",omega_3)
+# h = h_a + omega*h_v
+h3_kJperKg = st3_air.h + omega_3*st3_v.h; print("h3_kJperKg=",h3_kJperKg,"kJ/kg")
+
+# state 4: saturated air exiting the cooling tower
+st4_air = th.state('air',T=(Tair4_C,'C'),p=(pAir_Pa,'Pa'),name='4 air')
+st4_v = th.state('water',T=(Tair4_C,'C'),x=1,name='4 vapor')
+p4_v_sat_kPa = st4_v.p; print("p4_v_sat_kPa=",p4_v_sat_kPa,"kPa")
+p4_v_kPa = (RH4/100)*p4_v_sat_kPa; print("p4_v_kPa=",p4_v_kPa,"kPa")
+omega_4 = 0.622*p4_v_kPa/(pAir_kPa - p4_v_kPa); print("omega_4=",omega_4)
+h4_kJperKg = st4_air.h + omega_4*st4_v.h; print("h4_kJperKg=",h4_kJperKg,"kJ/kg")
+
+# state 5: liquid water exiting the cooling tower
+st5 = th.state('water',T=(T_cold_water,'C'), x=0, name='5')
+h5_kJperKg = st5.h; print("h5_kJperKg=",h5_kJperKg,"kJ/kg")
+
+# water mass flow rate passing through the heat exchanger inside the data center
+mdot_2_kgPerS = (P_IT+P_overhead+P_cooling_aux)/(cp_water*deltaT_water); print("mdot_2_kgPerS=",mdot_2_kgPerS,"kg/s")
+
+# air mass flow rate passing through the cooling tower
+mdot_air_kgPerS = (mdot_2_kgPerS*(h2_kJperKg-h5_kJperKg))/((h4_kJperKg-h3_kJperKg)-h5_kJperKg*(omega_4-omega_3))
+print(f"(a) Mass flow rate of air into the cooling tower: {mdot_air_kgPerS:.2f} kg/s")
+
+# water makeup mass flow rate due to evaporation
+mdot_makeup_kgPerS = mdot_air_kgPerS * (omega_4 - omega_3)
+print(f"(b) Mass flow rate of the makeup water: {mdot_makeup_kgPerS:.2f} kg/s")
+
+# double check to see if these numbers match the acutal cooling needs:
+cp_air_kJperKg = 1.004
+Qout_kW_estimate = mdot_air_kgPerS*cp_air_kJperKg*(Tair4_C-Tair_C) + mdot_makeup_kgPerS*h_fg;
+print("Qout_kW_estimate=",Qout_kW_estimate,"kW")
+
+Q_evap_kW = mdot_makeup_kgPerS*h_fg
+evap_fraction = Q_evap_kW/QdotOut_kW
+print(f"(c) Fraction of cooling power that is done through evaporation: {evap_fraction*100:.2f} %")
+
+print("\n----- COOLING SYSTEM RESULTS -----")
+print(f"Cooling Load Required: {QdotOut_kW:.1f} kW")
+# print(f"Sensible Water Flow: {m_dot_sensible:.3f} kg/s") # this answer has no meaning; all of the water heating is due to sensible heating
+print(f"Evaporated Water:    {mdot_makeup_kgPerS:.3f} kg/s")
+print(f"Total Water Inlet:   {mdot_2_kgPerS:.3f} kg/s")
+# print(f"Water Outlet:        {m_dot_water_out:.3f} kg/s") # for a steady flow heat exchanger, the mass flow rate into it is equal to the mass flow rate out
+# print(f"Net Water Loss (evaporation): {m_dot_evap:.3f} kg/s") # There is no net water loss since the amount of water evaporated is equal to the mass flow rate of the makeup water
+
+print("\n----- ENERGY CONSUMPTION -----")
+print(f"IT Load:             {P_IT} kW")
+print(f"Auxiliary Load:      {P_overhead} kW")
+print(f"Cooling Equipment:   {P_cooling_aux:.1f} kW")
+print(f"Total Power:         {WdotIn_kW:.1f} kW")
+
+# ~~~~~~
 
