@@ -1,0 +1,146 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
+
+# ============================================================
+# CONSTANTS
+# ============================================================
+SIGMA    = 5.67e-8   # Stefan-Boltzmann W/m²/K⁴
+CP_WATER = 4.186     # kJ/kg/K
+CP_AIR   = 1.004     # kJ/kg/K
+H_FG     = 2257      # kJ/kg latent heat vaporisation
+
+# ============================================================
+# 1. DATA CENTER PARAMETERS
+# ============================================================
+P_IT          = 5000
+P_overhead    = 500
+P_cooling_aux = 0.05 * P_IT
+
+W_dot_in_kW  = P_IT + P_overhead + P_cooling_aux
+Q_dot_out_kW = W_dot_in_kW
+
+print(f"Total heat to reject: {Q_dot_out_kW:.1f} kW")
+
+# ============================================================
+# 2. COOLING TOWER AMBIENT CONDITIONS
+# ============================================================
+T_hot_water  = 35.0
+T_cold_water = 28.0
+T_amb_C      = 20.0
+T_air4_C     = 33.0
+p_atm_kPa    = 101.325
+RH_in        = 0.60
+RH_out       = 1.00
+
+def sat_pressure_kPa(T_C):
+    T_K = T_C + 273.15
+    return np.exp(16.3872 - 3885.70 / (T_K - 43.16)) / 10.0
+
+def humidity_ratio(T_C, RH, p=p_atm_kPa):
+    pv = RH * sat_pressure_kPa(T_C)
+    return 0.622 * pv / (p - pv)
+
+def h_moist_air(T_C, omega):
+    return CP_AIR * T_C + omega * (2501.0 + 1.86 * T_C)
+
+def h_liq_water(T_C):
+    return CP_WATER * T_C
+
+
+# 3. COOLING TOWER SOLVER
+def solve_cooling_tower(Q_kW, T_in_C, T_out_C=T_cold_water):
+    dT       = T_in_C - T_out_C
+    if dT <= 0 or Q_kW <= 0:
+        return {"Q_reject_kW": 0, "mdot_water_kgs": 0,
+                "mdot_air_kgs": 0, "mdot_makeup_kgs": 0,
+                "T_water_in_C": T_in_C}
+    mdot_w   = Q_kW / (CP_WATER * dT)
+    omega3   = humidity_ratio(T_amb_C, RH_in)
+    omega4   = humidity_ratio(T_air4_C, RH_out)
+    h3       = h_moist_air(T_amb_C, omega3)
+    h4       = h_moist_air(T_air4_C, omega4)
+    h5       = h_liq_water(T_out_C)
+    h2       = h_liq_water(T_in_C)
+    denom    = (h4 - h3) - h5 * (omega4 - omega3)
+    mdot_air = mdot_w * (h2 - h5) / denom
+    mdot_mu  = mdot_air * (omega4 - omega3)
+    return {"Q_reject_kW": Q_kW, "mdot_water_kgs": mdot_w,
+            "mdot_air_kgs": mdot_air, "mdot_makeup_kgs": mdot_mu,
+            "T_water_in_C": T_in_C}
+
+# 4. RADIATIVE COOLER (steady-state)
+emissivity  = 0.95
+alpha_solar = 0.05
+tau_cover   = 0.95
+hL          = 1.5      # W/m²/K convective coeff
+
+T_amb_K = T_amb_C + 273.15
+T_sky_K = 0.0552 * T_amb_K**1.5    # Swinbank correlation
+T_sky_C = T_sky_K - 273.15
+print(f"Sky temperature (Swinbank): {T_sky_C:.1f} °C")
+
+def Q_radiative_W(A_m2, I_solar=0.0, T_rad_C=T_hot_water):
+    T_rad_K   = T_rad_C + 273.15
+    Q_rad_net = emissivity * SIGMA * (T_sky_K**4 - T_rad_K**4) * A_m2
+    Q_solar   = alpha_solar * tau_cover * I_solar * A_m2
+    Q_conv    = hL * A_m2 * (T_amb_K - T_rad_K)
+    return -Q_rad_net - Q_solar - Q_conv    # W, positive = cooling
+
+# 5. Base
+base     = solve_cooling_tower(Q_dot_out_kW, T_hot_water)
+mdot_w_base  = baseline["mdot_water_kgs"]
+
+print("\n" + "="*60)
+print("BASE — Cooling Tower Only")
+print("="*60)
+print(f"  Heat rejected:        {baseline['Q_reject_kW']:.1f} kW")
+print(f"  Water loop flow:      {baseline['mdot_water_kgs']:.2f} kg/s")
+print(f"  Air mass flow:        {baseline['mdot_air_kgs']:.2f} kg/s")
+print(f"  Makeup water:         {baseline['mdot_makeup_kgs']:.4f} kg/s  "
+      f"({base['mdot_makeup_kgs']*3600:.2f} kg/hr)")
+
+# 6. SENSITIVITY SWEEP
+area_range = np.linspace(0, 50_000, 500)
+
+def sweep(I_solar):
+    Q_rad     = np.array([Q_radiative_W(A, I_solar) / 1000 for A in area_range])
+    Q_rad_cap = np.minimum(Q_rad, Q_dot_out_kW)
+    Q_tower   = Q_dot_out_kW - Q_rad_cap
+    makeup, airflow = [], []
+    for Q in Q_tower:
+        T_in = T_cold_water + Q / (CP_WATER * mdot_w_base)
+        r    = solve_cooling_tower(Q, T_in)
+        makeup.append(r["mdot_makeup_kgs"])
+        airflow.append(r["mdot_air_kgs"])
+    return Q_rad, Q_rad_cap, Q_tower, np.array(makeup), np.array(airflow)
+
+Q_rad_n, Q_cap_n, Q_twr_n, mu_n, af_n = sweep(0)
+Q_rad_d, Q_cap_d, Q_twr_d, mu_d, af_d = sweep(600)
+
+ws_n = (1 - mu_n / baseline["mdot_makeup_kgs"]) * 100
+ws_d = (1 - mu_d / baseline["mdot_makeup_kgs"]) * 100
+fr_n = Q_cap_n / Q_dot_out_kW * 100
+fr_d = Q_cap_d / Q_dot_out_kW * 100
+
+
+# 7. DESIGN POINT — 10,000 m²
+A_dp = 10_000
+dp_night = solve_cooling_tower(
+    Q_dot_out_kW - min(Q_radiative_W(A_dp,   0)/1e3, Q_dot_out_kW),
+    T_cold_water + (Q_dot_out_kW - min(Q_radiative_W(A_dp,   0)/1e3, Q_dot_out_kW)) / (CP_WATER * mdot_w_base))
+dp_day   = solve_cooling_tower(
+    Q_dot_out_kW - min(Q_radiative_W(A_dp, 600)/1e3, Q_dot_out_kW),
+    T_cold_water + (Q_dot_out_kW - min(Q_radiative_W(A_dp, 600)/1e3, Q_dot_out_kW)) / (CP_WATER * mdot_w_base))
+
+for label, dp, I_sol in [("Night (I=0)", dp_night, 0), ("Day (I=600 W/m²)", dp_day, 600)]:
+    Q_rad_dp = min(Q_radiative_W(A_dp, I_sol)/1e3, Q_dot_out_kW)
+    saving   = (1 - dp["mdot_makeup_kgs"] / baseline["mdot_makeup_kgs"]) * 100
+    print(f"\n{'='*60}")
+    print(f"DESIGN POINT — {A_dp:,} m²  |  {label}")
+    print(f"{'='*60}")
+    print(f"  Radiative power:         {Q_rad_dp:.1f} kW  ({Q_rad_dp/Q_dot_out_kW*100:.1f}%)")
+    print(f"  Tower residual load:     {dp['Q_reject_kW']:.1f} kW")
+    print(f"  Water inlet to tower:    {dp['T_water_in_C']:.2f} °C")
+    print(f"  Makeup water:            {dp['mdot_makeup_kgs']*3600:.2f} kg/hr")
+    print(f"  Water saving:            {saving:.1f}%")
